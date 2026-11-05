@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "disposition": "pass",
+  "kimi_version": "2.4.1",
+  "doctor": {
+    "config_toml": "valid",
+    "managed_hook_rule_count": 34,
+    "managed_block_count": 1
+  },
+  "command_form": {
+    "required": "bash -c \"export …; bash …\"",
+    "rejected": "LC_ALL=… bash …",
+    "reason": "Windows hook runner did not execute the assignment-prefix form"
+  },
+  "checks": [
+    {
+      "event": "SessionStart",
+      "session_id": "session_53a4177b-a059-4489-8012-f6b207ea9af5",
+      "observed": "core.hooksPath=.githooks in the isolated clone",
+      "disposition": "pass"
+    },
+    {
+      "event": "UserPromptSubmit",
+      "session_id": "session_f14bee74-9b33-4fad-b77c-35a9d11bcb46",
+      "observed": ".claude/state/comm-style-injected-<session-id> created in the isolated clone",
+      "disposition": "pass"
+    },
+    {
+      "event": "Stop",
+      "session_id": "session_f14bee74-9b33-4fad-b77c-35a9d11bcb46",
+      "observed": ".claude/logs/capture_log.jsonl created in the isolated clone",
+      "disposition": "pass"
+    }
+  ],
+  "isolation": {
+    "repository": "temporary local clone with remotes removed",
+    "home": "temporary",
+    "checkpoint_config": "temporary",
+    "model_side_effects": "read-only prompt without tool calls"
+  }
+}

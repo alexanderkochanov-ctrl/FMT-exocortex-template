@@ -30,8 +30,8 @@
     "env",
     "permissions"
   ],
-  "output_sha256": "6c80eb1285105f678ae554d89f5b9a33fe7ceb69e727786a1c65eecaf4fbc0e1",
-  "rules_sha256": "96b1e42691ebab187d5ec25827400d82caaf16497eec69cd42d31382d360ec68",
+  "output_sha256": "55a8fc96fac98f1c3ad80c7f35c89f5f92cba56dcf2cff35f0b7b2b5784e2d59",
+  "rules_sha256": "c65f45193c3f3f9054820d795c65fb867bbcda2e07846846a4246e90a3da95e4",
   "schema_version": 1,
   "source_command_count": 32,
   "source_group_count": 30,

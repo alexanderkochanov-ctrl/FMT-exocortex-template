@@ -4,6 +4,12 @@
     "schema": "claude-code-settings-hooks",
     "project_variable": "$CLAUDE_PROJECT_DIR",
     "hook_path_prefix": ".claude/hooks/",
+    "command_locale": "C.UTF-8",
+    "python_shim_hooks": [
+      "secret-leak-block.sh",
+      "secret-file-read-block.sh",
+      "secret-mcp-dump-guard.sh"
+    ],
     "ignored_sections": [
       "permissions",
       "env"

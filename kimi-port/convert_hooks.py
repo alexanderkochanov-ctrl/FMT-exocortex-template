@@ -71,7 +71,18 @@ def _convert_command(command: object, source: dict, path: str) -> str:
     if any(part in operators or "$" in part or "`" in part for part in parts[1:]):
         raise ConversionError(f"{path}: подстановки и shell-операторы требуют отдельного правила")
 
-    return shlex.join(["bash", f"./{relative}", *parts[1:]])
+    hook_name = posix_path.name
+    if hook_name == "precompact-checkpoint.sh":
+        relative = "kimi-port/generated/adapters/precompact-checkpoint.sh"
+
+    environment = [
+        f"export LC_ALL={source['command_locale']}",
+        'export CLAUDE_PROJECT_DIR="$PWD"',
+    ]
+    if hook_name in source["python_shim_hooks"]:
+        environment.append('export PATH="./kimi-port/generated/adapters/bin:$PATH"')
+    command = shlex.join(["bash", f"./{relative}", *parts[1:]])
+    return f'bash -c "{"; ".join(environment)}; {command}"'
 
 
 def _timeout(hook: dict, event_rule: dict, path: str) -> int:

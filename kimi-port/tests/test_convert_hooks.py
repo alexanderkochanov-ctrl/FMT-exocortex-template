@@ -48,7 +48,12 @@ class ConvertHooksTest(unittest.TestCase):
         self.assertEqual(len(parsed["hooks"]), 34)
         for rule in parsed["hooks"]:
             self.assertLessEqual(set(rule), {"event", "matcher", "command", "timeout"})
-            self.assertTrue(rule["command"].startswith("bash ./.claude/hooks/"))
+            self.assertTrue(
+                rule["command"].startswith(
+                    'bash -c "export LC_ALL=C.UTF-8; export CLAUDE_PROJECT_DIR="$PWD";'
+                )
+            )
+            self.assertIn("bash ./", rule["command"])
             self.assertNotIn("$CLAUDE_PROJECT_DIR", rule["command"])
             self.assertGreaterEqual(rule["timeout"], 1)
             self.assertLessEqual(rule["timeout"], 600)
