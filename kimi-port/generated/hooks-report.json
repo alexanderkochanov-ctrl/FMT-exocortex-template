@@ -1,0 +1,56 @@
+{
+  "adaptations": [
+    {
+      "accepted_source_only_matchers": [
+        "clear"
+      ],
+      "kind": "session_start_fanout",
+      "source_event": "SessionStart",
+      "source_matcher": null,
+      "target_events": [
+        "SessionStart",
+        "PostCompact"
+      ]
+    },
+    {
+      "kind": "matcher_mapping",
+      "source_event": "SessionStart",
+      "source_matcher": "compact",
+      "target_event": "PostCompact",
+      "target_matcher": "auto|manual"
+    },
+    {
+      "kind": "default_timeout_rounding",
+      "source_event": "SessionEnd",
+      "source_timeout": 1.5,
+      "target_timeout": 1
+    }
+  ],
+  "ignored_sections": [
+    "env",
+    "permissions"
+  ],
+  "output_sha256": "6c80eb1285105f678ae554d89f5b9a33fe7ceb69e727786a1c65eecaf4fbc0e1",
+  "rules_sha256": "96b1e42691ebab187d5ec25827400d82caaf16497eec69cd42d31382d360ec68",
+  "schema_version": 1,
+  "source_command_count": 32,
+  "source_group_count": 30,
+  "source_schema": "claude-code-settings-hooks",
+  "source_sha256": "11c7b4023e21a4de8cc04273d4f3ec15646715d1d174612405f589050cbd59b9",
+  "target_event_counts": {
+    "PostCompact": 3,
+    "PostToolUse": 4,
+    "PreCompact": 1,
+    "PreToolUse": 14,
+    "SessionEnd": 1,
+    "SessionStart": 2,
+    "Stop": 3,
+    "UserPromptSubmit": 6
+  },
+  "target_rule_count": 34,
+  "target_schema": "kimi-code-config-hooks",
+  "unverified": [
+    "Execution of converted hook commands under Kimi Code on Windows",
+    "Claude SessionStart source=clear has no direct Kimi event"
+  ]
+}

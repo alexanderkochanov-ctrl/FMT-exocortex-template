@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "source": {
+    "schema": "claude-code-settings-hooks",
+    "project_variable": "$CLAUDE_PROJECT_DIR",
+    "hook_path_prefix": ".claude/hooks/",
+    "ignored_sections": [
+      "permissions",
+      "env"
+    ]
+  },
+  "target": {
+    "schema": "kimi-code-config-hooks",
+    "events": [
+      "UserPromptSubmit",
+      "UserPromptQueued",
+      "PreToolUse",
+      "Stop",
+      "TurnStarted",
+      "PostToolUse",
+      "PostToolUseFailure",
+      "PermissionRequest",
+      "PermissionResult",
+      "SessionStart",
+      "SessionEnd",
+      "SessionHeartbeat",
+      "SubagentStart",
+      "SubagentStop",
+      "TaskStarted",
+      "StopFailure",
+      "Interrupt",
+      "PreCompact",
+      "PostCompact",
+      "Notification"
+    ]
+  },
+  "event_rules": {
+    "UserPromptSubmit": {
+      "rule_id": "MAP-KIMI-HOOK-001",
+      "target_event": "UserPromptSubmit",
+      "matcher_policy": "preserve",
+      "source_default_timeout": 30,
+      "target_default_timeout": 30
+    },
+    "PreToolUse": {
+      "rule_id": "MAP-KIMI-HOOK-002",
+      "target_event": "PreToolUse",
+      "matcher_policy": "preserve",
+      "source_default_timeout": 600,
+      "target_default_timeout": 600
+    },
+    "PostToolUse": {
+      "rule_id": "MAP-KIMI-HOOK-003",
+      "target_event": "PostToolUse",
+      "matcher_policy": "preserve",
+      "source_default_timeout": 600,
+      "target_default_timeout": 600
+    },
+    "Stop": {
+      "rule_id": "MAP-KIMI-HOOK-004",
+      "target_event": "Stop",
+      "matcher_policy": "forbid",
+      "source_default_timeout": 600,
+      "target_default_timeout": 600
+    },
+    "PreCompact": {
+      "rule_id": "MAP-KIMI-HOOK-005",
+      "target_event": "PreCompact",
+      "matcher_policy": "preserve",
+      "source_default_timeout": 600,
+      "target_default_timeout": 600
+    },
+    "SessionStart": {
+      "rule_id": "MAP-KIMI-HOOK-006",
+      "target_event": "SessionStart",
+      "matcher_policy": "session_start",
+      "source_default_timeout": 600,
+      "target_default_timeout": 600,
+      "direct_matchers": [
+        "startup",
+        "resume"
+      ],
+      "matcher_map": {
+        "compact": {
+          "target_event": "PostCompact",
+          "target_matcher": "auto|manual"
+        }
+      },
+      "unmatched_targets": [
+        {
+          "target_event": "SessionStart"
+        },
+        {
+          "target_event": "PostCompact",
+          "target_matcher": "auto|manual"
+        }
+      ],
+      "accepted_source_only_matchers": [
+        "clear"
+      ]
+    },
+    "SessionEnd": {
+      "rule_id": "MAP-KIMI-HOOK-007",
+      "target_event": "SessionEnd",
+      "matcher_policy": "forbid",
+      "source_default_timeout": 1.5,
+      "target_default_timeout": 1
+    }
+  }
+}
