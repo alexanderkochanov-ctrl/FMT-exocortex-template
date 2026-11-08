@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -u
-adapter_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ "$#" -ge 1 ] && [ "$(basename -- "$1")" = "secret-bypass-analyzer.py" ]; then
-  exec python "$adapter_dir/secret-bypass-analyzer.py" "${@:2}"
-fi
-exec python "$@"
