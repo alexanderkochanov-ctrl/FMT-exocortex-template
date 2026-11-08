@@ -20,43 +20,49 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PA
 # in validate-fmt-scripts.sh took such an exit 0 as proof of safety.
 [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]] && {
     echo "dry-run-begin.sh — эксклюзивное создание dry-run репетиции (issue #549 stage 2)"
-    echo "Использование: dry-run-begin.sh [initiator] [session_id]"
+    echo "Использование: dry-run-begin.sh [initiator] [session_id] [hold]"
+    echo "  hold — Stop-хук не завершает репетицию (подагент в фоне); завершить dry-run-complete.sh"
     exit 0
 }
 
 INITIATOR="${1:-audit-installation}"
 SID="${2:-${CLAUDE_SESSION_ID:-dry-$(date +%s)-$$}}"
+# issue #1435: a background subagent outlives the owner's turn, and the Stop
+# hook would complete the rehearsal under it. "hold" leaves completion to
+# dry-run-complete.sh only; the sentinel TTL still bounds a forgotten one.
+STOP_FALLBACK="owner-stop"
+case "${3:-}" in
+    "") ;;
+    hold) STOP_FALLBACK="hold" ;;
+    *) echo "dry-run-begin: unknown third argument '${3}' (expected: hold)" >&2; exit 2 ;;
+esac
 command -v jq >/dev/null 2>&1 || { echo "dry-run-begin: jq required" >&2; exit 2; }
-
-SENTINEL="${IWE_DRY_RUN_SENTINEL:-/tmp/iwe-dry-run.flag}"
-DRY_DIR="${IWE_DRY_RUN_DIR:-/tmp/iwe-dry-run-$(id -u)}"
-# A single path resolver (Codex r2): the override works only with a test-mode
-# marker — otherwise components look in different places.
-if [ -n "${IWE_DRY_RUN_DIR:-}" ] || [ -n "${IWE_DRY_RUN_SENTINEL:-}" ]; then
-    [ -f "${IWE_DRY_RUN_DIR:-/nonexistent}/.iwe-dry-run-test-mode" ] || {
-        DRY_DIR="/tmp/iwe-dry-run-$(id -u)"
-        SENTINEL="/tmp/iwe-dry-run.flag"
-    }
-fi
-LOCK_DIR="$DRY_DIR/transaction.lock"
 
 fail() { echo "dry-run-begin: $*" >&2; exit 1; }
 
-# Directory: lstat invariants of the gate.
-[ -L "$DRY_DIR" ] && fail "dir $DRY_DIR is a symlink — refusing"
-if [ ! -d "$DRY_DIR" ]; then
-    mkdir -m 0700 "$DRY_DIR" 2>/dev/null || fail "cannot create $DRY_DIR with 0700"
+# Path and privacy check come from the one shared library (also used by the
+# gate, the Stop hook and dry-run-complete.sh — issue #1447): on Git Bash the
+# criterion is the NTFS ACL of %LOCALAPPDATA%\iwe-dry-run, elsewhere 0700.
+# State and the token are written only after the check has passed.
+# The copy is the one the installed gate loads: in a workspace
+# (<ws>/FMT-exocortex-template/scripts/ next to <ws>/.claude/hooks/) that is
+# <ws>/.claude/lib, never the template's own copy, so a partial update cannot
+# make begin and the gate apply different criteria. A workspace gate without
+# its library is refused: a rehearsal the gate cannot read would lock it.
+# Outside a workspace (the template checkout itself) the template copy is used.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/../../.claude/hooks/dry-run-gate.sh" ]; then
+    DRY_RUN_LIB="$SCRIPT_DIR/../../.claude/lib/dry-run-dir.sh"
+else
+    DRY_RUN_LIB="$SCRIPT_DIR/../.claude/lib/dry-run-dir.sh"
 fi
-case "$(uname)" in
-    Darwin) OWNER_UID=$(stat -f %u "$DRY_DIR" 2>/dev/null || true) ;;
-    *)      OWNER_UID=$(stat -c %u "$DRY_DIR" 2>/dev/null || true) ;;
-esac
-[ "$OWNER_UID" = "$(id -u)" ] || fail "dir owned by uid $OWNER_UID"
-case "$(uname)" in
-    Darwin) PERMS=$(stat -f %Lp "$DRY_DIR" 2>/dev/null || true) ;;
-    *)      PERMS=$(stat -c %a "$DRY_DIR" 2>/dev/null || true) ;;
-esac
-[ -n "$PERMS" ] && [ $(( 8#$PERMS & 077 )) -eq 0 ] || fail "dir $DRY_DIR has group/other write permissions ($PERMS)"
+# shellcheck source=../.claude/lib/dry-run-dir.sh
+{ [ -r "$DRY_RUN_LIB" ] && . "$DRY_RUN_LIB"; } || fail "$DRY_RUN_LIB missing — cannot locate dry-run state (run update.sh)"
+dry_run_resolve_paths || fail "$DRY_RUN_ERR"
+DRY_DIR="$DRY_RUN_DIR"
+SENTINEL="$DRY_RUN_SENTINEL"
+LOCK_DIR="$DRY_DIR/transaction.lock"
+dry_run_dir_check create || fail "$DRY_RUN_ERR"
 
 tries=0
 while ! mkdir "$LOCK_DIR" 2>/dev/null; do
@@ -115,14 +121,14 @@ umask 077
 TMP=$(mktemp "$DRY_DIR/.begin.XXXXXX") || fail "mktemp failed"
 jq -nc --arg gid "$GID" --arg sid "$SID" --arg tsha "$TOKEN_SHA" \
   --argjson pid "$OWNER_PID" --arg pstart "$OWNER_PID_START" --argjson pgid "$OWNER_PGID" \
-  --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg init "$INITIATOR" \
-  '{version:2,gate_id:$gid,owner_session_id:$sid,owner_pid:$pid,owner_pgid:$pgid,owner_pid_start:$pstart,owner_token_sha256:$tsha,state:"active",created_at:$created,initiator:$init}' \
+  --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg init "$INITIATOR" --arg stopfb "$STOP_FALLBACK" \
+  '{version:2,gate_id:$gid,owner_session_id:$sid,owner_pid:$pid,owner_pgid:$pgid,owner_pid_start:$pstart,owner_token_sha256:$tsha,state:"active",created_at:$created,initiator:$init,stop_fallback:$stopfb}' \
   > "$TMP" && mv -f "$TMP" "$DRY_DIR/gate-$GID.state" || { rm -f "$TMP"; fail "atomic state create failed"; }
 
 # The sentinel is an exclusive creation, only after state. On a race (someone
 # created it after our check) — roll back exactly our own state.
-if ! ( set -C; jq -nc --arg gid "$GID" --arg sid "$SID" --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{gate_id:$gid,created_at:$created,session_id:$sid,initiator:"audit-installation"}' \
+if ! ( set -C; jq -nc --arg gid "$GID" --arg sid "$SID" --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg init "$INITIATOR" \
+    '{gate_id:$gid,created_at:$created,session_id:$sid,initiator:$init}' \
     > "$SENTINEL" ) 2>/dev/null; then
     rm -f "$DRY_DIR/gate-$GID.state" 2>/dev/null || true
     fail "sentinel $SENTINEL already exists — refusing to overwrite (state rolled back)"

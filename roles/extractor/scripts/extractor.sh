@@ -669,11 +669,59 @@ resolve_governance_branch() {
         printf '%s\n' "${ref#origin/}"
         return 0
     fi
+    # #1433: a repo created via `git init` + `gh repo create --push` has no
+    # origin/HEAD. An isolated worktree then sits on its throwaway
+    # extractor/* branch, whose upstream is the governance branch.
+    # Read the tracked ref from config, not `<remote>/<branch>` text: a remote
+    # name may itself contain `/`.
+    local cur merge
+    if cur=$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null) \
+        && merge=$(git -C "$repo" config --get "branch.$cur.merge" 2>/dev/null) \
+        && [ "$(git -C "$repo" config --get "branch.$cur.remote" 2>/dev/null)" != "." ]; then
+        ref="${merge#refs/heads/}"
+        case "$ref" in
+            ''|extractor/*) ;;
+            *) printf '%s\n' "$ref"; return 0 ;;
+        esac
+    fi
+    # A throwaway extractor/* branch is never the governance branch.
     if ref=$(git -C "$repo" branch --show-current 2>/dev/null) && [ -n "$ref" ]; then
-        printf '%s\n' "$ref"
-        return 0
+        case "$ref" in
+            extractor/*) ;;
+            *) printf '%s\n' "$ref"; return 0 ;;
+        esac
     fi
     printf '%s\n' "main"
+}
+
+# #1433: the publish gate comes from the canonical governance repo. update.sh
+# delivers the gate there (possibly uncommitted), next to the canonical
+# ds-publish.sh the gate always runs; an isolated worktree checked out from
+# origin/main may still hold an older gate without --branch support.
+# Prints the path; empty when neither copy exists.
+resolve_publish_gate() {  # <strategy_dir>
+    local strategy_dir="$1" gate
+    for gate in "${IWE_ROOT:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/lib/publish-gate.sh" \
+                "$strategy_dir/scripts/lib/publish-gate.sh"; do
+        if [ -f "$gate" ]; then
+            printf '%s\n' "$gate"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# Without the gate there is no publication at all (#1433 follow-up): a raw push
+# skips the fresh-origin/main retry and the coordination lock. No env override.
+# Canonical modes (session-close, on-demand): the next run after update.sh
+# publishes the same commit via the "pre-existing extractor commit" branch.
+# Isolated modes (inbox-check, feeders): the commit stays on the preserved
+# extractor/* branch; its inputs stay unmarked on origin and are re-extracted.
+refuse_publish_without_gate() {  # <repo_name> <sha>
+    local repo_name="$1" sha="$2"
+    log "ERROR: publish-gate.sh not found for $repo_name; extractor commit $sha stays local, nothing pushed. Run update.sh to install scripts/lib/publish-gate.sh"
+    notify "Экстрактор" "Гейт публикации не найден: коммит $repo_name остался локальным. Запустите update.sh."
+    EXTRACTOR_COMMIT_RESULT="failed"
 }
 
 commit_extractor_changes() {
@@ -773,16 +821,11 @@ commit_extractor_changes() {
                 done
                 if [ "$is_extractor_commit" -eq 1 ]; then
                     log "Found unpublished extractor commit ($latest_local) already on HEAD"
-                    local publish_gate="$strategy_dir/scripts/lib/publish-gate.sh"
-                    if [ ! -f "$publish_gate" ]; then
-                        if git -C "$strategy_dir" push origin "$latest_local:refs/heads/$gov_branch" >> "$LOG_FILE" 2>&1; then
-                            log "Pushed pre-existing extractor commit $latest_local"
-                            EXTRACTOR_COMMIT_RESULT="published"
-                        else
-                            log "WARN: git push failed for pre-existing extractor commit $latest_local"
-                            EXTRACTOR_COMMIT_RESULT="failed"
-                            return 1
-                        fi
+                    local publish_gate
+                    publish_gate=$(resolve_publish_gate "$strategy_dir")
+                    if [ -z "$publish_gate" ]; then
+                        refuse_publish_without_gate "$repo_name" "$latest_local"
+                        return 1
                     else
                         # shellcheck source=/dev/null
                         . "$publish_gate"
@@ -872,18 +915,12 @@ commit_extractor_changes() {
     # housekeeping registration above stays open through this step (its
     # repo-relative paths cover the cherry-picked commit too, not just this
     # worktree's own) and is closed once, right after, regardless of outcome.
-    local publish_gate="$strategy_dir/scripts/lib/publish-gate.sh"
-    if [ ! -f "$publish_gate" ]; then
-        log "WARN: publish-gate.sh not found at $publish_gate; falling back to raw push for $repo_name"
-        if git -C "$strategy_dir" push origin "$head_after:refs/heads/$gov_branch" >> "$LOG_FILE" 2>&1; then
-            log "Pushed $repo_name ($head_after)"
-            EXTRACTOR_COMMIT_RESULT="published"
-        else
-            log "WARN: git push failed; only the extractor commit was offered"
-            EXTRACTOR_COMMIT_RESULT="failed"
-        fi
+    local publish_gate
+    publish_gate=$(resolve_publish_gate "$strategy_dir")
+    if [ -z "$publish_gate" ]; then
+        refuse_publish_without_gate "$repo_name" "$head_after"
         [ "$scope_opened" -eq 1 ] && extractor_scope_close "$strategy_dir" "$scope_agent" "$scope_reason"
-        [ "$EXTRACTOR_COMMIT_RESULT" = "published" ] && return 0 || return 1
+        return 1
     fi
     # shellcheck source=/dev/null
     . "$publish_gate"
@@ -959,10 +996,11 @@ acquire_inbox_lock() {  # <lock_dir> [label]
 # accumulated per the linked issues. A worktree with no uncommitted changes
 # and no commits past its own starting point has nothing worth reviewing;
 # clean it up the same way the pre-existing "no pending captures" branch
-# already did. <base_sha> is create_isolated_worktree()'s ISO_BASE_SHA.
-maybe_cleanup_empty_worktree() {  # <canonical_repo> <worktree> <branch> <isolated_workspace> <repo_name> <run_root> <base_sha> <preserve-log-message>
+# already did. <base_sha> is create_isolated_worktree()'s ISO_BASE_SHA;
+# <gov_branch> is the governance branch the worktree was started from.
+maybe_cleanup_empty_worktree() {  # <canonical_repo> <worktree> <branch> <isolated_workspace> <repo_name> <run_root> <base_sha> <gov_branch> <preserve-log-message>
     local canonical_repo="$1" worktree="$2" branch_name="$3" isolated_workspace="$4"
-    local repo_name="$5" run_root="$6" base_sha="$7" preserve_message="$8"
+    local repo_name="$5" run_root="$6" base_sha="$7" gov_branch="$8" preserve_message="$9"
     local dirty ahead_log
     dirty=$(git -C "$worktree" status --porcelain 2>/dev/null) || dirty="?"
     ahead_log=$(git -C "$worktree" log --oneline "${base_sha}..HEAD" 2>/dev/null) || ahead_log="?"
@@ -972,7 +1010,7 @@ maybe_cleanup_empty_worktree() {  # <canonical_repo> <worktree> <branch> <isolat
     fi
     if [ -z "$dirty" ] && [ -z "$ahead_log" ]; then
         cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
-            "$isolated_workspace" "$repo_name" "$run_root" || true
+            "$isolated_workspace" "$repo_name" "$run_root" "$gov_branch" || true
         log "Cleaned up empty isolated worktree (no diff from $base_sha): $worktree"
         return 0
     fi
@@ -980,13 +1018,14 @@ maybe_cleanup_empty_worktree() {  # <canonical_repo> <worktree> <branch> <isolat
     return 1
 }
 
-cleanup_isolated_inbox_worktree() {
+cleanup_isolated_inbox_worktree() {  # <canonical_repo> <worktree> <branch> <isolated_workspace> <repo_name> <run_root> <gov_branch>
     local canonical_repo="$1"
     local worktree="$2"
     local branch_name="$3"
     local isolated_workspace="$4"
     local repo_name="$5"
     local run_root="$6"
+    local gov_branch="$7"
 
     if ! git -C "$canonical_repo" worktree remove "$worktree" >> "$LOG_FILE" 2>&1; then
         log "WARN: published inbox-check worktree was preserved after cleanup failure: $worktree"
@@ -996,16 +1035,20 @@ cleanup_isolated_inbox_worktree() {
     if ! git -C "$canonical_repo" branch -d "$branch_name" >> "$LOG_FILE" 2>&1; then
         # Publication carries the commit to origin as a cherry-pick (new SHA), so
         # `branch -d` never sees the branch as merged. Drop it only when every
-        # commit on it has a patch-equivalent on its upstream; otherwise keep it.
-        local upstream
-        upstream=$(git -C "$canonical_repo" rev-parse --abbrev-ref "${branch_name}@{upstream}" 2>/dev/null) || upstream=""
-        if [ -n "$upstream" ]; then
-            timeout 20 git -C "$canonical_repo" fetch -q "${upstream%%/*}" "${upstream#*/}" >> "$LOG_FILE" 2>&1 || true
+        # commit on it has a patch-equivalent on origin/<gov_branch>; otherwise
+        # keep it. The base is passed in, not read from the branch's upstream
+        # config, which a concurrent run may have failed to write (#1458).
+        local base_ref=""
+        if [ -n "$gov_branch" ]; then
+            base_ref="origin/$gov_branch"
+            timeout 20 git -C "$canonical_repo" fetch -q origin "$gov_branch" >> "$LOG_FILE" 2>&1 \
+                || log "WARN: cannot refresh $base_ref before branch cleanup; comparing with the local copy"
         fi
-        if [ -n "$upstream" ] \
-           && ! git -C "$canonical_repo" cherry "$upstream" "$branch_name" 2>/dev/null | grep -q '^+' \
+        if [ -n "$base_ref" ] \
+           && git -C "$canonical_repo" rev-parse --verify -q "$base_ref^{commit}" >/dev/null \
+           && ! git -C "$canonical_repo" cherry "$base_ref" "$branch_name" 2>/dev/null | grep -q '^+' \
            && git -C "$canonical_repo" branch -D "$branch_name" >> "$LOG_FILE" 2>&1; then
-            log "Deleted isolated-run branch (all commits patch-equivalent on $upstream): $branch_name"
+            log "Deleted isolated-run branch (all commits patch-equivalent on $base_ref): $branch_name"
         else
             log "WARN: isolated-run branch was preserved for review: $branch_name"
         fi
@@ -1228,6 +1271,47 @@ standalone_capture_files() {
                2>/dev/null | sort)
 }
 
+# #1458: a failed `worktree add -b` can still leave its new branch behind
+# (`worktree prune` does not remove branches). Delete it only when it is
+# provably this attempt's own empty branch: absent before the attempt, named
+# like an isolation branch, still at the start commit, nothing on top of it.
+drop_failed_isolation_branch() {  # <canonical_repo> <branch> <start_sha> <existed_before: 0|1>
+    local canonical_repo="$1" branch_name="$2" start_sha="$3" existed_before="$4" tip ahead
+    [ "$existed_before" = 0 ] || return 0
+    git -C "$canonical_repo" show-ref --verify --quiet "refs/heads/$branch_name" || return 0
+    if ! [[ "$branch_name" =~ ^extractor/[A-Za-z0-9._-]+-[0-9]{14}-[0-9]+$ ]]; then
+        log "WARN: branch $branch_name left after a failed worktree add does not look like an isolation branch; kept"
+        return 0
+    fi
+    tip=$(git -C "$canonical_repo" rev-parse --verify -q "refs/heads/$branch_name^{commit}") || tip=""
+    ahead=$(git -C "$canonical_repo" rev-list --count "$start_sha..refs/heads/$branch_name" 2>/dev/null) || ahead=""
+    if [ "$tip" = "$start_sha" ] && [ "$ahead" = 0 ] \
+       && git -C "$canonical_repo" branch -D "$branch_name" >> "$LOG_FILE" 2>&1; then
+        log "Deleted orphan isolation branch left by a failed worktree add: $branch_name"
+    else
+        log "WARN: orphan isolation branch kept for review (tip ${tip:-?}, ${ahead:-?} commits past $start_sha): $branch_name"
+    fi
+}
+
+# Retries only on a held .git/config lock -- a concurrent isolated run writes
+# its own upstream there for a moment (#1458). Any other error fails at once.
+set_isolation_upstream() {  # <worktree> <branch> <upstream>
+    local worktree="$1" branch_name="$2" upstream="$3" attempt output
+    for attempt in 1 2 3; do
+        if output=$(git -C "$worktree" branch --set-upstream-to="$upstream" "$branch_name" 2>&1); then
+            printf '%s\n' "$output" >> "$LOG_FILE"
+            return 0
+        fi
+        printf '%s\n' "$output" >> "$LOG_FILE"
+        case "$output" in
+            *"could not lock config file"*) ;;
+            *) return 1 ;;
+        esac
+        [ "$attempt" -eq 3 ] || sleep 1
+    done
+    return 1
+}
+
 # Shared by the isolated inbox-check and the isolated feeders: a throwaway
 # worktree of origin/<gov_branch> on its own branch extractor/<label>-<id>, plus
 # a synthetic workspace whose <repo_name> entry links to that worktree. The
@@ -1248,21 +1332,42 @@ create_isolated_worktree() {  # <canonical_repo> <repo_name> <gov_branch> <label
     # later failure can tell "nothing happened here, safe to clean up
     # immediately" from "there is a real diff worth preserving for review"
     # (see maybe_cleanup_empty_worktree()).
-    if ! ISO_BASE_SHA=$(git -C "$canonical_repo" rev-parse --verify -q "origin/$gov_branch^{commit}" 2>/dev/null) || \
-       ! git -C "$canonical_repo" worktree add -b "$ISO_BRANCH" "$ISO_WORKTREE" "origin/$gov_branch" >> "$LOG_FILE" 2>&1; then
-        log "WARN: cannot create isolated $label worktree from origin/$gov_branch; empty run directory removed"
-        git -C "$canonical_repo" worktree prune >> "$LOG_FILE" 2>&1 || true
+    if ! ISO_BASE_SHA=$(git -C "$canonical_repo" rev-parse --verify -q "origin/$gov_branch^{commit}" 2>/dev/null); then
+        log "WARN: cannot resolve origin/$gov_branch for isolated $label worktree; empty run directory removed"
         rm -rf "$ISO_RUN_ROOT"
         return 1
     fi
-    git -C "$ISO_WORKTREE" branch --set-upstream-to="origin/$gov_branch" "$ISO_BRANCH" >> "$LOG_FILE" 2>&1 || true
+    # #1458: --no-track keeps `worktree add` away from the shared .git/config,
+    # whose lock a concurrent isolated run may hold; the upstream is written
+    # separately below. The pre-existence probe lets a failed add drop only a
+    # branch it created itself.
+    local branch_existed=0
+    git -C "$canonical_repo" show-ref --verify --quiet "refs/heads/$ISO_BRANCH" && branch_existed=1
+    if ! git -C "$canonical_repo" worktree add --no-track -b "$ISO_BRANCH" "$ISO_WORKTREE" "$ISO_BASE_SHA" >> "$LOG_FILE" 2>&1; then
+        log "WARN: cannot create isolated $label worktree from origin/$gov_branch; empty run directory removed"
+        git -C "$canonical_repo" worktree prune >> "$LOG_FILE" 2>&1 || true
+        drop_failed_isolation_branch "$canonical_repo" "$ISO_BRANCH" "$ISO_BASE_SHA" "$branch_existed"
+        rm -rf "$ISO_RUN_ROOT"
+        return 1
+    fi
+    # Required, not cosmetic: commit_extractor_changes() resolves the
+    # governance branch inside this worktree, and on a repo without
+    # origin/HEAD that resolution reads this upstream (#1433). Without it the
+    # run would publish to the fallback 'main', so it is aborted instead.
+    if ! set_isolation_upstream "$ISO_WORKTREE" "$ISO_BRANCH" "origin/$gov_branch"; then
+        log "ERROR: cannot set upstream origin/$gov_branch for $ISO_BRANCH; isolated $label run aborted"
+        maybe_cleanup_empty_worktree "$canonical_repo" "$ISO_WORKTREE" "$ISO_BRANCH" "$ISO_WORKSPACE" \
+            "$repo_name" "$ISO_RUN_ROOT" "$ISO_BASE_SHA" "$gov_branch" \
+            "cannot set upstream for isolated $label worktree; worktree preserved" || true
+        return 1
+    fi
 
     if ! mkdir "$ISO_WORKSPACE" || ! ln -s "$ISO_WORKTREE" "$ISO_WORKSPACE/$repo_name"; then
         # Nothing has run in this worktree yet (mkdir/ln -s failed before any
         # agent call) -- always safe to clean up, no review-worthy diff
         # possible at this point.
         maybe_cleanup_empty_worktree "$canonical_repo" "$ISO_WORKTREE" "$ISO_BRANCH" "$ISO_WORKSPACE" \
-            "$repo_name" "$ISO_RUN_ROOT" "$ISO_BASE_SHA" \
+            "$repo_name" "$ISO_RUN_ROOT" "$ISO_BASE_SHA" "$gov_branch" \
             "cannot prepare isolated $label workspace; worktree preserved" || true
         return 1
     fi
@@ -1321,7 +1426,7 @@ run_inbox_check_isolated() {
        ! cp "$isolated_template/roles/extractor/prompts/session-close.md" \
            "$isolated_workspace/FMT-exocortex-template/roles/extractor/prompts/session-close.md"; then
         maybe_cleanup_empty_worktree "$canonical_repo" "$worktree" "$branch_name" "$isolated_workspace" \
-            "$repo_name" "$run_root" "$ISO_BASE_SHA" \
+            "$repo_name" "$run_root" "$ISO_BASE_SHA" "$gov_branch" \
             "cannot prepare isolated inbox-check workspace; worktree preserved" || true
         release_inbox_lock "$lock_dir"
         return 1
@@ -1349,7 +1454,7 @@ run_inbox_check_isolated() {
     if [ "$actual_pending" -le 0 ]; then
         log "SKIP: No pending captures in refreshed inbox"
         cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
-            "$isolated_workspace" "$repo_name" "$run_root" || true
+            "$isolated_workspace" "$repo_name" "$run_root" "$gov_branch" || true
         release_inbox_lock "$lock_dir"
         return 0
     fi
@@ -1357,7 +1462,7 @@ run_inbox_check_isolated() {
 
     if ! mount_readonly_packs "$canonical_workspace" "$isolated_workspace"; then
         maybe_cleanup_empty_worktree "$canonical_repo" "$worktree" "$branch_name" "$isolated_workspace" \
-            "$repo_name" "$run_root" "$ISO_BASE_SHA" \
+            "$repo_name" "$run_root" "$ISO_BASE_SHA" "$gov_branch" \
             "Pack refresh failed; inbox marks unchanged, worktree preserved" || true
         release_inbox_lock "$lock_dir"
         return 1
@@ -1376,7 +1481,7 @@ $(pack_snapshot_context)"
     export IWE_WORKSPACE
     if ! run_claude "inbox-check" "$source_context" "isolated-inbox"; then
         maybe_cleanup_empty_worktree "$canonical_repo" "$worktree" "$branch_name" "$isolated_workspace" \
-            "$repo_name" "$run_root" "$ISO_BASE_SHA" \
+            "$repo_name" "$run_root" "$ISO_BASE_SHA" "$gov_branch" \
             "isolated inbox-check failed; worktree preserved for review" || true
         release_inbox_lock "$lock_dir"
         return 1
@@ -1393,12 +1498,12 @@ $(pack_snapshot_context)"
             # push before returning 0; commit_extractor_changes() only sets
             # EXTRACTOR_COMMIT_RESULT=published after that 0.
             cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
-                "$isolated_workspace" "$repo_name" "$run_root" || true
+                "$isolated_workspace" "$repo_name" "$run_root" "$gov_branch" || true
             log "Completed process: inbox-check; report and input marks published"
             ;;
         *)
             maybe_cleanup_empty_worktree "$canonical_repo" "$worktree" "$branch_name" "$isolated_workspace" \
-                "$repo_name" "$run_root" "$ISO_BASE_SHA" \
+                "$repo_name" "$run_root" "$ISO_BASE_SHA" "$gov_branch" \
                 "isolated inbox-check did not reach a safe publication state; worktree preserved" || true
             release_inbox_lock "$lock_dir"
             return 1
@@ -1468,7 +1573,7 @@ run_feed_isolated() {  # <prompt-file> <extra-args> <label> [mode]
     local EXTRACTOR_FEED_BASE_SHA EXTRACTOR_FEED_LABEL="$label"
     EXTRACTOR_FEED_BASE_SHA=$(git -C "$worktree" rev-parse HEAD 2>/dev/null) || {
         maybe_cleanup_empty_worktree "$canonical_repo" "$worktree" "$branch_name" "$isolated_workspace" \
-            "$repo_name" "$run_root" "$ISO_BASE_SHA" \
+            "$repo_name" "$run_root" "$ISO_BASE_SHA" "$gov_branch" \
             "cannot resolve isolated feed base commit; worktree preserved" || true
         return 1
     }
@@ -1488,7 +1593,7 @@ $feed_context"
     EXTRACTOR_COMMIT_RESULT=""
     if ! run_claude "$prompt_file" "$feed_context" "$commit_mode"; then
         maybe_cleanup_empty_worktree "$canonical_repo" "$worktree" "$branch_name" "$isolated_workspace" \
-            "$repo_name" "$run_root" "$ISO_BASE_SHA" \
+            "$repo_name" "$run_root" "$ISO_BASE_SHA" "$gov_branch" \
             "isolated $prompt_file failed; worktree preserved for review" || true
         return 1
     fi
@@ -1496,12 +1601,12 @@ $feed_context"
     case "${EXTRACTOR_COMMIT_RESULT:-}" in
         published|no_changes)
             cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
-                "$isolated_workspace" "$repo_name" "$run_root" || true
+                "$isolated_workspace" "$repo_name" "$run_root" "$gov_branch" || true
             log "Completed process: $prompt_file (${EXTRACTOR_COMMIT_RESULT})"
             ;;
         *)
             maybe_cleanup_empty_worktree "$canonical_repo" "$worktree" "$branch_name" "$isolated_workspace" \
-                "$repo_name" "$run_root" "$ISO_BASE_SHA" \
+                "$repo_name" "$run_root" "$ISO_BASE_SHA" "$gov_branch" \
                 "isolated $prompt_file did not reach a safe publication state; worktree preserved" || true
             return 1
             ;;

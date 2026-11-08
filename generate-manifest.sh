@@ -80,6 +80,8 @@ EXCLUDED_SCRIPTS=(
     "scripts/export-glossary-snapshot.py"       # CI-only: snapshot of graph terms for translation (WP-5 Phase 67)
     "scripts/fetch-glossary-concepts.py"        # CI-only: traversal of concept_list for the terms snapshot (WP-5 Phase 67)
     "scripts/delivery_checks.py"                # CI-only: translate-sync.yml
+    "scripts/glossary_source.py"                # CI-only: translate-sync.yml (glossary loader, WP-617 Phase 3)
+    "scripts/glossary_supplier.py"              # CI-only: glossary-supplier.yml (daily terms snapshot refresh, WP-617 Phase 4)
     "scripts/assemble_distribution.py"          # CI-only: translate-sync.yml (assembling the composition of the English version, WP-610 Phase 10)
     "scripts/release-notice-build.py"           # CI-only: notify-update.yml (release announcement, WP-529)
     "scripts/audit-ad-hoc-roles.py"             # no references from any delivered artifact
@@ -96,6 +98,7 @@ EXCLUDED_EXACT=(
     "translation/glossary-snapshot-allowlist.yaml"  # CI-only: terms snapshot allowlist (WP-5 Phase 67)
     "translation/glossary-snapshot.csv"         # CI-only: graph terms snapshot (WP-5 Phase 67)
     "translation/glossary-snapshot.meta.json"   # CI-only: terms snapshot passport (WP-5 Phase 67)
+    "translation/glossary-local.csv"            # CI-only: terms not yet in the graph, queue for WP-617 Phase 5
     "scripts/guide-kit-sync-state.yaml"         # provenance of the vendored guide-kit/ copy — needed by the CI drift check, not by users
     "${EXCLUDED_SCRIPTS[@]}"
 )
@@ -142,6 +145,13 @@ GITHUB_EXPLICIT_INCLUDE=(
 )
 GITHUB_CI_ONLY_EXCLUDE=(
     ".github/workflows/nightly-template-audit.yml"
+    # WP-529 Ф248: author-source gate is CI of this repository only; the list of paths is
+    # rewritten by the author-side template-sync.sh and means nothing in a user installation
+    # (delivery route: github-ci-only-exclude).
+    ".github/workflows/author-source-gate.yml"
+    ".github/scripts/author-source-gate.sh"
+    ".github/scripts/test-author-source-gate.sh"
+    ".github/author-sourced-paths.txt"
 )
 SETUP_EXPLICIT_INCLUDE=(
     "setup/build-runtime.sh"
