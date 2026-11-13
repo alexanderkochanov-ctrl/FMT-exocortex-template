@@ -156,6 +156,10 @@ _gb_main() {
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   case "$cmd" in
     open)
+      # Issue #1547: archive a leftover .stale before anything else, even when
+      # no .open exists — otherwise .stale accumulates across cycles and can
+      # block this run's rename when all three terminal files are present.
+      _gb_archive_previous "${file}.stale" "$file" || exit 1
       if [ -e "$file" ]; then
         created="$(grep '^created_at: ' "$file" | cut -d' ' -f2- || true)"
         created_epoch=""
@@ -167,7 +171,6 @@ _gb_main() {
           echo "session-guard: open --housekeeping: уже есть активная housekeeping-сессия '$reason' (возраст ${age}s). Закрой её или дождись TTL 1800s" >&2
           exit 1
         fi
-        _gb_archive_previous "${file}.stale" "$file" || exit 1
         [ ! -e "${file}.stale" ] || { echo "session-guard: open --housekeeping: .stale destination collision; существующий open сохранён" >&2; exit 1; }
         mv "$file" "${file}.stale"
         echo "WARNING: housekeeping semaphore '$reason' stale (${age}s), renamed to .stale" >&2
@@ -1662,6 +1665,12 @@ if [ "$CMD" = "open" ]; then
     _ensure_session_transition_lock "$HK_FILE" "$HK_SESSION_ID"
     HK_MAX_AGE=1800  # 30 minutes default TTL for housekeeping semaphores
     NOW_EPOCH=$(date +%s)
+    # Issue #1547: archive a leftover .stale unconditionally — before the age
+    # branch — so a previous cycle's terminal file can never collide with this
+    # run's stale rename, and close/open stay possible when all three files
+    # (.open/.closed/.stale) are present at once.
+    _archive_previous_terminal "${HK_FILE}.stale" "$HK_FILE" \
+      || fail "open --housekeeping: прошлый .stale не удалось перенести в архив; существующий open сохранён" 1
     if [ -f "$HK_FILE" ]; then
       HK_CREATED=$(grep "^created_at: " "$HK_FILE" | cut -d' ' -f2- || echo "")
       if [ -n "$HK_CREATED" ]; then
@@ -1669,8 +1678,11 @@ if [ "$CMD" = "open" ]; then
         if [ -n "$HK_CREATED_EPOCH" ]; then
           HK_AGE=$(( NOW_EPOCH - HK_CREATED_EPOCH ))
           if [ "$HK_AGE" -gt "$HK_MAX_AGE" ]; then
-            _archive_previous_terminal "${HK_FILE}.stale" "$HK_FILE" \
-              || fail "open --housekeeping: прошлый .stale не удалось перенести в архив; существующий open сохранён" 1
+            # No "destination must be free" pre-check here: _terminal_move_no_
+            # clobber already accepts a destination that shares the source's
+            # inode (an interrupted close later renamed by another
+            # implementation) and then unlinks the source; only a foreign
+            # inode is a hard collision.
             _terminal_move_no_clobber "$HK_FILE" "${HK_FILE}.stale" \
               || fail "open --housekeeping: .stale destination collision; существующий open сохранён" 1
             rm -f "${HK_FILE}.lease"
