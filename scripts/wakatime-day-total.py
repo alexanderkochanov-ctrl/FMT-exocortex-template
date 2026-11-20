@@ -99,7 +99,7 @@ def day_seconds(body, target):
     return seconds
 
 
-API_BASE = "https://wakatime.com/api/v1/users/current"
+API_BASE = "https://api.wakatime.com/api/v1/users/current"
 NEON_HINT = "use Neon fallback: domain_event coding_time"
 
 
