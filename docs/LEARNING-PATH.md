@@ -699,7 +699,7 @@ DS — самый частый тип репозитория, который т�
 
 | Слой | Файл | Что содержит | Лимит | Когда читается |
 |------|------|-------------|-------|---------------|
-| 1 | `MEMORY.md` | Задачи недели, уроки, навигация | ≤100 строк | Каждая сессия (авто) |
+| 1 | `MEMORY.md` | Задачи недели, уроки, навигация | по бюджету токенов; указатели на существующие файлы не удаляются (issue #1555) | Каждая сессия (авто) |
 | 2 | `CLAUDE.md` | Slim-ядро: блокирующие правила + навигация | ~90 строк | При старте (авто) |
 | 3 | `memory/*.md` | Протоколы, различения, SOTA, роли, чеклисты | по бюджету токенов (HOT/WARM/COLD) | По триггерам из CLAUDE.md |
 | 4 | `.claude/skills/` | Шаблоны, ритуалы (lazy loading) | По вызову | Только по команде `/skill` |
@@ -823,7 +823,7 @@ day_open:
 
 ### 5.6. Творческий конвейер: от заметки до поста
 
-> Формализация: [PD.FORM.005 Creative Pipeline](https://github.com/aisystant/PACK-personal/blob/main/pack/personal-development/02-domain-entities/formalizations/PD.FORM.005-creative-pipeline.md)
+> Формализация: [PD.FORM.005 Creative Pipeline](https://github.com/MimEcoSys/PACK-personal/blob/main/pack/personal-development/02-domain-entities/formalizations/PD.FORM.005-creative-pipeline.md)
 
 Творческий конвейер — замкнутый процесс превращения мыслей в публичные тексты и формализованные знания. Ключевой инвариант: **ничего не накапливается** — каждый артефакт обязан продвинуться или быть закрыт в пределах TTL.
 

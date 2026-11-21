@@ -63,20 +63,27 @@ fi
 
 Сформировать JSON стандартной библиотекой Python (`json.dumps`, без ручной подстановки ответа в код или JSON-строку) с полями `subtype: preclose_retro`, `retro_worked` и `retro_failed`. После ответа пилота записать событие:
 
+Журнал пишется в ту копию governance-репо, из которой шаг 11 делает коммит (`WC_REPO`; по умолчанию основная копия, а если сессия работает в изолированной копии — её путь). Путь по умолчанию в `ledger-append.sh` указывает на основную копию, поэтому `IWE_LEDGER_DIR` задаётся явно (issue #1550):
+
 ```bash
 WEEK=$(date +%Y-W%V)
+WC_REPO="${WC_REPO:-${IWE_WORKSPACE:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}}"
+export IWE_LEDGER_DIR="$WC_REPO/machine/ledger"
 bash "${IWE_SCRIPTS:-$HOME/IWE/scripts}/ledger-append.sh" week "$WEEK" pilot_answer "$RETRO_JSON" week-close
+LEDGER_WEEK_REL="machine/ledger/$(. "${IWE_SCRIPTS:-$HOME/IWE/scripts}/lib/ledger-path.sh" && ledger_path_rel week "$WEEK")"
 ```
 
-`RETRO_JSON` — сформированный выше JSON с ответами; не вызывать запись до получения ответа. Отказ записи останавливает Week Close, а не превращается в завершённую рефлексию. Проверить в недельном ledger, что событие `pilot_answer/preclose_retro` действительно записано, затем отметить шаг выполненным в списке шагов.
+`RETRO_JSON` — сформированный выше JSON с ответами; не вызывать запись до получения ответа. Отказ записи останавливает Week Close, а не превращается в завершённую рефлексию. Проверить в недельном ledger (`$WC_REPO/$LEDGER_WEEK_REL`), что событие `pilot_answer/preclose_retro` действительно записано.
+
+**Шаг 0б здесь ещё не выполнен** — он выполнен только после шага 11, когда файл журнала вошёл в коммит закрытия недели и этот коммит опубликован. Строка `PUBLISH_TRIGGER_FAIL` после записи на обычной установке ожидаема: службы-отправщика журнала (`ledger-publish.service`) в поставке шаблона нет, её вызов из `scripts/lib/ledger-publish-kick.sh` срабатывает только там, где служба установлена отдельно. Сохранение журнала делает шаг 11, не служба.
 
 ### 1. Сбор данных за 7 дней
 
 **Коммиты:**
 ```bash
-for repo in $(ls {{WORKSPACE_DIR}}/); do
-  if [ -d {{WORKSPACE_DIR}}/$repo/.git ]; then
-    commits=$(git -C {{WORKSPACE_DIR}}/$repo log --since="last monday 00:00" --until="today 00:00" --oneline --no-merges 2>/dev/null)
+for repo in $(ls ${IWE_WORKSPACE:-$HOME/IWE}/); do
+  if [ -d ${IWE_WORKSPACE:-$HOME/IWE}/$repo/.git ]; then
+    commits=$(git -C ${IWE_WORKSPACE:-$HOME/IWE}/$repo log --since="last monday 00:00" --until="today 00:00" --oneline --no-merges 2>/dev/null)
     [ -n "$commits" ] && echo "=== $repo ===" && echo "$commits"
   fi
 done
@@ -84,7 +91,7 @@ done
 
 **Календарь недели:**
 ```bash
-bash {{WORKSPACE_DIR}}/scripts/server-calendar.sh --week $(date -v-mon +%Y-%m-%d 2>/dev/null || date -d "last monday" +%Y-%m-%d)
+bash ${IWE_WORKSPACE:-$HOME/IWE}/scripts/server-calendar.sh --week $(date -v-mon +%Y-%m-%d 2>/dev/null || date -d "last monday" +%Y-%m-%d)
 ```
 Сверить запланированные встречи/задачи с фактом: что состоялось, что перенеслось, что отменилось. Для задач с отчётами (🔧 backup stress-test и т.п.) — проверить наличие артефакта.
 
@@ -122,7 +129,7 @@ bash {{WORKSPACE_DIR}}/scripts/server-calendar.sh --week $(date -v-mon +%Y-%m-%d
 bash ${IWE_SCRIPTS}/pending-phases-sweep.sh
 ```
 
-Скрипт обходит все `{{WORKSPACE_DIR}}/{{GOVERNANCE_REPO}}/inbox/WP-*.md` со `status: in_progress` (или без явного status), извлекает строки Ф-таблицы со статусом `⏳ pending` / `pending`, выводит сводку формата:
+Скрипт обходит все `${IWE_WORKSPACE:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/WP-*.md` со `status: in_progress` (или без явного status), извлекает строки Ф-таблицы со статусом `⏳ pending` / `pending`, выводит сводку формата:
 
 ```
 WP-NNN: pending-фазы (M):
@@ -132,7 +139,7 @@ WP-NNN: pending-фазы (M):
 
 Для каждой pending-фазы решить: **(a)** делать на этой неделе → добавить в W{N+1} как явный пункт; **(b)** переоценить (блокер? устарела?); **(c)** оставить как есть (если ожидание внешнего события — записать ожидаемый триггер).
 
-Если скрипта нет — fallback: `grep -l "status: in_progress" {{WORKSPACE_DIR}}/{{GOVERNANCE_REPO}}/inbox/WP-*.md` → для каждого `grep -E "⏳.*pending|Ф[0-9]+.*pending"`.
+Если скрипта нет — fallback: `grep -l "status: in_progress" ${IWE_WORKSPACE:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/WP-*.md` → для каждого `grep -E "⏳.*pending|Ф[0-9]+.*pending"`.
 
 ### 6. Captures и уроки
 
@@ -143,7 +150,7 @@ WP-NNN: pending-фазы (M):
 
 ### 6a. Сверка журнала гипотез (LPF, WP-496)
 
-> Регламент: `memory/lpf-hypothesis-log.md`. Журнал: `{{GOVERNANCE_REPO}}/current/hypotheses-log.md`.
+> Регламент: `memory/lpf-hypothesis-log.md`. Журнал: `${IWE_GOVERNANCE_REPO:-DS-strategy}/current/hypotheses-log.md`.
 
 1. Прочитать `hypotheses-log.md` — отфильтровать записи со статусом «на сверке» И датой сверки ≤ сегодня. Записи со статусом «черновик» (не подтверждённые пилотом Note-Review) — пропустить, они не в цикле сверки.
 2. Для каждой найденной записи: сверить критерий фальсификации с доступной фактурой (коммиты недели, `domain_event`, инфраструктурные логи, факты из ретро §3-4 этого протокола).
@@ -220,7 +227,7 @@ bash ${IWE_SCRIPTS}/memory-bleed.sh
 ```bash
 IWE_ROOT="${IWE_ROOT:-$HOME/IWE}"
 MEMORY_DIR="$IWE_ROOT/memory"
-echo "=== distinctions.md ===" && wc -l {{WORKSPACE_DIR}}/.claude/rules/distinctions.md
+echo "=== distinctions.md ===" && wc -l ${IWE_WORKSPACE:-$HOME/IWE}/.claude/rules/distinctions.md
 echo "=== MEMORY.md ===" && wc -l "$MEMORY_DIR/MEMORY.md"
 echo "=== memory/ файлы (mtime >14д) ===" && find "$MEMORY_DIR" -name "*.md" -mtime +14 -not -name "MEMORY.md" -not -path "*/archive/*" | sort
 ```
@@ -292,11 +299,14 @@ fi
 ### 11. Закоммитить governance-репо
 
 ```bash
-(cd {{WORKSPACE_DIR}}/{{GOVERNANCE_REPO}}
+WEEK=$(date +%Y-W%V)  # shell variables of step 0б do not survive between calls: recompute
+WC_REPO="${WC_REPO:-${IWE_WORKSPACE:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}}"
+LEDGER_WEEK_REL="machine/ledger/$(. "${IWE_SCRIPTS:-$HOME/IWE/scripts}/lib/ledger-path.sh" && ledger_path_rel week "$WEEK")"
+(cd "$WC_REPO"
 git status --short
 # НЕ git add -A/git add ./git add -u — AGENTS.md CRITICAL (может захватить работу других агентов)
 # Стейджить ТОЛЬКО файлы, изменённые в шагах 1-10 (в массив для pathspec):
-WC_FILES=(<каждый файл явным путём: WeekPlan, WeekReport, WP-REGISTRY, inbox/WP-*.md и т.д.>)
+WC_FILES=(<каждый файл явным путём: WeekPlan, WeekReport, WP-REGISTRY, inbox/WP-*.md и т.д.> "$LEDGER_WEEK_REL")
 git add "${WC_FILES[@]}"
 git diff --cached --name-only  # проверить scope — только week-close файлы
 # pathspec после `--`: commit ТОЛЬКО свои файлы, не подметаем чужой индекс
@@ -304,6 +314,23 @@ git commit -m "week-close: W{N} итоги q:{score}" -- "${WC_FILES[@]}"
 git push
 )
 ```
+
+Команды выше выполняются в `$WC_REPO` (та же копия, что в шаге 0б). Если правки идут через изолированную копию и публикацию (`ds-publish.sh`), файл журнала публикуется вместе с остальными файлами закрытия тем же вызовом.
+
+**Проверка шага 0б (issue #1550).** После публикации:
+
+```bash
+git -C "$WC_REPO" fetch -q origin main
+# Saved = the file in the working copy is byte-identical to the one on origin/main.
+# A ledger published earlier this week and appended again since does not count.
+if git -C "$WC_REPO" show "origin/main:$LEDGER_WEEK_REL" 2>/dev/null | cmp -s - "$WC_REPO/$LEDGER_WEEK_REL"; then
+  echo "0б: журнал недели сохранён ($(git -C "$WC_REPO" log -1 --format=%h origin/main -- "$LEDGER_WEEK_REL"))"
+else
+  echo "0б: ЖУРНАЛ НЕДЕЛИ НЕ СОХРАНЁН: $WC_REPO/$LEDGER_WEEK_REL"
+fi
+```
+
+Только при первом исходе отметить шаг 0б выполненным. При втором шаг 0б остаётся невыполненным, а итоговая сводка закрытия недели прямо говорит пилоту, что журнал ретро не сохранён, и печатает полный путь файла — его можно сохранить отдельным коммитом. Проверка сравнивает файл в рабочей копии с версией на `origin/main`: перестроенная при публикации история (rebase) засчитывается, а журнал, опубликованный раньше на этой неделе и дописанный после, — нет.
 
 ### 12. Верификация (Haiku R23)
 

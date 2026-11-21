@@ -451,9 +451,13 @@ frozen_checkout_match() {
 }
 
 resolve_isolate_push_script() {
+  # issue #1578: the template ships isolate-push.sh next to this script
+  # (FMT-exocortex-template/scripts/), which neither of the first two
+  # locations covers on a stock install, so close left every isolated copy behind.
   local candidates=(
     "$IWE_ROOT/$GOV_REPO/scripts/isolate-push.sh"
     "$IWE_ROOT/scripts/isolate-push.sh"
+    "$(dirname "$SESSION_GUARD_SELF")/isolate-push.sh"
   )
   local c
   for c in "${candidates[@]}"; do
@@ -1424,6 +1428,40 @@ orz_agent_name() {
 #   1 — no open semaphore at all for this agent
 #   2 — ambiguous or requested --wp/--slug matched nothing; candidate list
 #       already printed to stderr, caller should just propagate a failure
+# WP-484 Ф301 (И-11), adapted from the author's source 11.11: a second live semaphore
+# for the same work in the same conversation is how a session ends up with a mark
+# nobody closes. Opening stays allowed (the peer skill legitimately opens its own
+# after the WP Gate); the sibling is named at open, not discovered later. Only the
+# harness conversation id can tell "same conversation", so without it nothing is said.
+_wp_key() { # <wp> — comparable form: WP-44, 044 and 44 name one card
+  local n
+  if type wp_num_normalize >/dev/null 2>&1 && n=$(wp_num_normalize "$1" 2>/dev/null) && [ -n "$n" ]; then
+    printf '%s\n' "$n"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+warn_sibling_semaphores() { # <agent> <wp> <slug> <own .open path>
+  local agent="$1" wp_key slug="$3" own="$4" file other_wp other_slug
+  [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || return 0
+  wp_key=$(_wp_key "$2")
+  # Same agent only: `close --slug` selects among this agent's semaphores, so the
+  # printed exit must address one of them.
+  for file in "$SESSION_DIR/$agent"-*.open; do
+    [ -f "$file" ] && [ "$file" != "$own" ] || continue
+    grep -qxF "harness_session_id: $CLAUDE_CODE_SESSION_ID" "$file" || continue
+    # Housekeeping semaphores carry no wp: line; a file may vanish between reads.
+    # Under `set -euo pipefail` a failed read must skip the file, not abort open.
+    other_wp=$(grep -m1 '^wp: ' "$file" | cut -d' ' -f2-) || continue
+    [ -n "$other_wp" ] && [ "$(_wp_key "$other_wp")" = "$wp_key" ] || continue
+    other_slug=$(grep -m1 '^slug: ' "$file" | cut -d' ' -f2-) || continue
+    [ -n "$other_slug" ] && [ "$other_slug" != "$slug" ] || continue
+    printf "open: ПРЕДУПРЕЖДЕНИЕ: в этой беседе на тот же РП уже есть живая отметка '%s' (%s). Когда её работа закончена, закрой её: session-guard.sh close --agent %q --slug %q\n" \
+      "$other_slug" "$(basename "$file")" "$agent" "$other_slug" >&2
+  done
+}
+
 list_candidates() { # list_candidates <agent> — one path per line, newest first
   ls -t "$SESSION_DIR/${1}"-*.open 2>/dev/null || true
 }
@@ -1866,6 +1904,7 @@ if [ "$CMD" = "open" ]; then
       -name "$(basename "$SEM_FILE").*" -print -quit 2>/dev/null | grep -q .; then
     fail "open: для exact session_id '$SESSION_ID' уже есть terminal/lease state; выбери новый идентификатор" 1
   fi
+  warn_sibling_semaphores "$AGENT" "$WP" "${SLUG:-$WP}" "$SEM_FILE"
   # WP-484 (31.07, data-pipeline-audit-2026-07-30.md §3.3): a caller-supplied slug
   # sometimes already carries today's date (Kimi free-text `--slug`, human habit) —
   # confirmed live on real files, e.g. sessions/2026-07/2026-07-31-2026-07-31-wp510-*.md.
@@ -1939,9 +1978,23 @@ if [ "$CMD" = "open" ]; then
     [ -f "$ISOLATE_EXISTING_SEM" ] && ISOLATE_SEM_EXISTS=1 || ISOLATE_SEM_EXISTS=0
 
     # Dirty policy: first open on frozen path = advisory; re-entry = allowlist only
+    # issue #1572: update.sh/setup.sh keep their own records in the workspace root
+    # (.claude.md.base, .claude.md.delivered, .memory-deployed.tsv). They must stay
+    # there (the next update reads them) and the platform does not own the root's
+    # .gitignore, so an untracked copy of exactly these files in the workspace root
+    # is not "uncommitted work" and must not block --isolate.
+    ISOLATE_ON_WORKSPACE_ROOT=0
+    if [ "$(realpath "$ISOLATE_BASE_DIR" 2>/dev/null || echo "$ISOLATE_BASE_DIR")" = "$(realpath "$IWE_ROOT" 2>/dev/null || echo "$IWE_ROOT")" ]; then
+      ISOLATE_ON_WORKSPACE_ROOT=1
+    fi
     ISOLATE_DIRTY_ENTRIES=()
     while IFS= read -r -d '' isolate_status_entry; do
       [ -n "$isolate_status_entry" ] || continue
+      if [ "$ISOLATE_ON_WORKSPACE_ROOT" = "1" ]; then
+        case "$isolate_status_entry" in
+          '?? .claude.md.base'|'?? .claude.md.delivered'|'?? .memory-deployed.tsv') continue ;;
+        esac
+      fi
       ISOLATE_DIRTY_ENTRIES+=("$isolate_status_entry")
     done < <(git -C "$ISOLATE_BASE_DIR" status --porcelain -z --untracked-files=all 2>/dev/null)
     if [ "${#ISOLATE_DIRTY_ENTRIES[@]}" -gt 0 ]; then
@@ -2043,7 +2096,12 @@ if [ "$CMD" = "open" ]; then
   # scaffold. Redirect it into the isolated worktree so the allowlist
   # registration below (which keys off this same variable) and the actual
   # append target agree.
-  if [ "${ISOLATE_FLAG:-0}" = "1" ] && [ -n "${ISOLATED_WORKTREE_PATH:-}" ]; then
+  # issue #1577: only when the isolated worktree IS the governance repo. An
+  # isolate of another repo (the IWE root started from ~/IWE) has no inbox/:
+  # the line landed in an untracked file of that copy, never reached the
+  # governance log, and later blocked `git worktree remove`.
+  if [ "${ISOLATE_FLAG:-0}" = "1" ] && [ -n "${ISOLATED_WORKTREE_PATH:-}" ] \
+     && same_git_repo "$ISOLATE_BASE_DIR" "$IWE_ROOT/$GOV_REPO"; then
     OPEN_LOG="$ISOLATED_WORKTREE_PATH/inbox/open-sessions.log"
     mkdir -p "$(dirname "$OPEN_LOG")"
   fi
@@ -2605,13 +2663,18 @@ print(json.dumps({"wp": sys.argv[1], "slug": sys.argv[2], "agent": sys.argv[3], 
   if [ -n "$ISOLATE_WT" ] && [ -d "$ISOLATE_WT" ]; then
     if PUSH_BIN=$(resolve_isolate_push_script); then
       echo "session-guard: close: isolate-push через $PUSH_BIN" >&2
-      if ! bash "$PUSH_BIN" "$ISOLATE_WT" main; then
+      # The same target open isolated from: origin's default branch, `main`
+      # only when origin/HEAD is unknown. A hard-coded `main` never delivered
+      # a repo whose default branch is named otherwise.
+      ISOLATE_TARGET_BRANCH="$(git -C "$ISOLATE_WT" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#^refs/remotes/origin/##' || true)"
+      ISOLATE_TARGET_BRANCH="${ISOLATE_TARGET_BRANCH:-main}"
+      if ! IWE_GOVERNANCE_REPO="$GOV_REPO" bash "$PUSH_BIN" "$ISOLATE_WT" "$ISOLATE_TARGET_BRANCH"; then
         echo "⚠️  isolate-push не завершился успешно — worktree оставлен: $ISOLATE_WT" >&2
       else
         git -C "$(git -C "$ISOLATE_WT" rev-parse --git-common-dir 2>/dev/null | sed "s|/.git$||;s|/$||" || true)" worktree remove --force "$ISOLATE_WT" 2>/dev/null           || git worktree remove --force "$ISOLATE_WT" 2>/dev/null           || echo "⚠️  не удалось удалить isolate worktree $ISOLATE_WT" >&2
       fi
     else
-      echo "⚠️  isolate-push.sh не найден ($GOV_REPO/scripts или $IWE_ROOT/scripts) — worktree оставлен: $ISOLATE_WT" >&2
+      echo "⚠️  isolate-push.sh не найден ($GOV_REPO/scripts, $IWE_ROOT/scripts или $(dirname "$SESSION_GUARD_SELF")) — worktree оставлен: $ISOLATE_WT" >&2
     fi
   fi
 

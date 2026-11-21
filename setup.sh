@@ -1136,6 +1136,27 @@ else
     fi
 fi
 
+# === 4g. Skills for DeepSeek Harness (DSH) ===
+# Skills live in <workspace>/.claude/skills. Claude Code reads that directory by
+# itself; DSH discovers skills only in .dsh/skills and .agents/skills, so without
+# this step a DSH agent sees none of the template's skills and every protocol that
+# starts with a skill (day-open, wp-new, artifactor) degrades to reading files.
+# Source-of-truth: setup/install-dsh-skills.sh. Idempotent, and a no-op when DSH
+# is not installed — an installation without DSH must not grow a ~/.dsh.
+if $DRY_RUN; then
+    bash "$TEMPLATE_DIR/setup/install-dsh-skills.sh" \
+        --workspace "$WORKSPACE_DIR" --dry-run 2>&1 | sed 's/^/  /'
+else
+    echo "[4g] Connecting template skills to DeepSeek Harness..."
+    if DSH_SKILLS_OUTPUT=$(bash "$TEMPLATE_DIR/setup/install-dsh-skills.sh" --workspace "$WORKSPACE_DIR" 2>&1); then
+        printf '%s\n' "$DSH_SKILLS_OUTPUT" | sed 's/^/  /'
+    else
+        printf '%s\n' "$DSH_SKILLS_OUTPUT" | sed 's/^/  /'
+        echo "  ⚠ навыки для DSH не подключены — запусти вручную:"
+        echo "    bash $TEMPLATE_DIR/setup/install-dsh-skills.sh --workspace $WORKSPACE_DIR"
+    fi
+fi
+
 # === 5. Install roles (autodiscovery via role.yaml) ===
 # Role install.sh scripts pick their own scheduler: launchd on macOS,
 # systemd --user or cron on Linux (WSL2 included, #454). Issue #1441: this
@@ -1143,6 +1164,15 @@ fi
 setup_roles_supported() {
     [ "$(uname -s)" = "Linux" ] || command -v launchctl >/dev/null 2>&1
 }
+
+# The install mode outlives this run: update.sh must not schedule what --core left out (WP-529
+# Ф270, RT5-2 of the rc.5 red team: the first update installed the extractor feeders). Kept in
+# the workspace root, not .iwe-runtime/, which every update rebuilds.
+if $CORE_ONLY; then
+    printf 'core\n' > "$WORKSPACE_DIR/.iwe-install-mode"
+else
+    printf 'full\n' > "$WORKSPACE_DIR/.iwe-install-mode"
+fi
 
 if $CORE_ONLY; then
     echo "[5/6] Автоматизация... пропущена (core mode)"
